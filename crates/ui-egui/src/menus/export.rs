@@ -1,11 +1,17 @@
 use super::{DesignApp, Value, json};
 use crate::app::file_dialogs::{Bound, with_path};
 
-pub(super) fn download_document(app: &mut DesignApp) -> Result<Value, String> {
+/// Save, or Save As… when `save_as`, where saving is a download. Save As goes to
+/// `Services::download_as` when there is one: a hosting page must not store it over the opened file.
+pub(super) fn download_document(app: &mut DesignApp, save_as: bool) -> Result<Value, String> {
     let name = app.session.active().map(|d| format!("{}.designcraft", d.doc.title)).ok_or("no document")?;
     let ser = app.run("file.serialize", json!({}))?;
     let bytes = designcraft_engine::cmd::base64_decode(ser["base64"].as_str().unwrap_or_default());
-    let download = app.services.download.as_mut().ok_or("no download service")?;
+    let services = &mut app.services;
+    let download = match services.download_as.as_mut() {
+        Some(download_as) if save_as => download_as,
+        _ => services.download.as_mut().ok_or("no download service")?,
+    };
     download(&name, &bytes).map_err(|e| format!("could not download {name}: {e}"))?;
     // Marks the document saved; on the web the engine doesn't touch a file system.
     app.run("file.saveAs", json!({"path": name}))

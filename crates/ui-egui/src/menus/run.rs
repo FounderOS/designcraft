@@ -61,7 +61,7 @@ pub(crate) fn save_when_checked(app: &mut DesignApp, save: impl FnOnce(&mut Desi
 #[track_caller]
 pub(crate) fn save_then(app: &mut DesignApp, after: impl FnOnce(&mut DesignApp) -> Result<Value, String> + 'static) -> Result<Value, String> {
     if app.services.download.is_some() {
-        download_document(app)?;
+        download_document(app, false)?;
         return after(app);
     }
     if app.session.active().is_some_and(|d| d.path.is_some()) {
@@ -191,7 +191,8 @@ fn run_ui_part1(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             ));
             Ok(Value::Null)
         }
-        "app.save" | "app.saveDialog" if app.services.download.is_some() => download_document(app),
+        "app.save" if app.services.download.is_some() => download_document(app, false),
+        "app.saveDialog" if app.services.download.is_some() => download_document(app, true),
         "app.save" => {
             if app.session.active().is_some_and(|d| d.path.is_some()) {
                 return Some(save_when_checked(app, |app| app.run("file.save", json!({}))));

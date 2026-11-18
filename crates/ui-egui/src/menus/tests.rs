@@ -3243,6 +3243,42 @@ fn mac_settings_follow_about_in_the_app_menu_and_leave_edit() {
     }
 }
 
+/// Web Save As goes to `download_as` (a hosting page stores it as a new file); Save and exports
+/// never do, and without `download_as` Save As downloads as Save does.
+#[test]
+fn save_as_is_true_only_for_save_as() {
+    type Calls = std::rc::Rc<std::cell::RefCell<Vec<(&'static str, String)>>>;
+    let dir = tempfile::tempdir().unwrap();
+    let title = dir.path().join("doc").to_string_lossy().to_string();
+    let calls: Calls = Calls::default();
+    let record = |calls: &Calls, via: &'static str| {
+        let calls = calls.clone();
+        Box::new(move |name: &str, _: &[u8]| {
+            calls.borrow_mut().push((via, name.to_string()));
+            Ok(())
+        }) as Box<dyn FnMut(&str, &[u8]) -> Result<(), String>>
+    };
+    let services = crate::Services {
+        write: Some(record(&calls, "write")),
+        download: Some(record(&calls, "download")),
+        download_as: Some(record(&calls, "download_as")),
+        ..Default::default()
+    };
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), services);
+    app.run("file.new", json!({"title": title})).unwrap();
+
+    app.run("app.save", json!({})).unwrap();
+    app.run("app.saveDialog", json!({})).unwrap();
+    app.run("app.exportIdml", json!({})).unwrap();
+    let vias: Vec<_> = calls.borrow().iter().map(|(via, _)| *via).collect();
+    assert_eq!(vias, ["download", "download_as", "write"]);
+    assert!(calls.borrow()[2].1.ends_with(".idml"), "an export keeps its own extension: {:?}", calls.borrow()[2]);
+
+    app.services.download_as = None;
+    app.run("app.saveDialog", json!({})).unwrap();
+    assert_eq!(calls.borrow().last().map(|(via, _)| *via), Some("download"));
+}
+
 /// Web save: a download that couldn't start is an error and leaves the document unsaved; one
 /// that started marks it saved.
 #[test]

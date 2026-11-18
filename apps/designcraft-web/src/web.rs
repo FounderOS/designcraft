@@ -56,6 +56,10 @@ pub fn start() {
         {
             create.instance_descriptor.backends = eframe::wgpu::Backends::GL;
         }
+        let inbox: Inbox = Inbox::default();
+        // Connected before the runner starts, so a host still hears `failed` when it can't.
+        let host = crate::host::connect(&canvas, &inbox);
+        let creator_host = host.clone();
         let runner = eframe::WebRunner::new();
         let creator_graphics = graphics.clone();
         let result = runner
@@ -71,15 +75,24 @@ pub fn start() {
                             graphics_failed(&device_graphics, GRAPHICS_TITLE, GRAPHICS_MESSAGE, &format!("Device loss ({reason:?}): {message}"));
                         });
                     }
-                    let inbox: Inbox = Inbox::default();
-                    let mut app = DesignApp::new(Session::new(), services(inbox.clone(), cc.egui_ctx.clone()));
+                    if let Some(host) = &creator_host {
+                        host.listen(cc.egui_ctx.clone());
+                    }
+                    let mut app = DesignApp::new(Session::new(), services(inbox.clone(), cc.egui_ctx.clone(), creator_host.clone()));
                     if has_query_flag(&query(), "sample") {
                         let _ = app.run("file.newSample", serde_json::json!({}));
                     }
-                    Ok(Box::new(WebShell { app, inbox, read_errors: Default::default(), graphics: creator_graphics }))
+                    Ok(Box::new(WebShell { app, inbox, read_errors: Default::default(), graphics: creator_graphics, host: creator_host }))
                 }),
             )
             .await;
+        // Ready only once the runner is up: starting can still fail after the app is made.
+        if let Some(host) = &host {
+            match &result {
+                Ok(()) => host.ready(),
+                Err(e) => host.failed(&format!("{e:?}")),
+            }
+        }
         match result {
             Ok(()) => {
                 if let Err(e) = install_recovery_controls(&runner, &canvas, &graphics) {
@@ -347,6 +360,7 @@ struct WebShell {
     /// Why a dropped file couldn't be read, for the status bar (the read finishes outside a frame).
     read_errors: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     graphics: GraphicsState,
+    host: Option<crate::host::Bridge>,
 }
 
 impl eframe::App for WebShell {
@@ -357,6 +371,9 @@ impl eframe::App for WebShell {
             self.app.status(error);
         }
         let _ = graphics.run_if_healthy(|| self.app.logic(ctx));
+        if let Some(host) = &self.host {
+            host.dirty(self.app.session.documents().iter().any(|d| d.is_dirty()));
+        }
     }
 
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
@@ -408,7 +425,7 @@ impl eframe::App for WebShell {
     }
 }
 
-fn services(inbox: Inbox, ctx: egui::Context) -> Services {
+fn services(inbox: Inbox, ctx: egui::Context, host: Option<crate::host::Bridge>) -> Services {
     let open_inbox = inbox.clone();
     Services {
         open_async: Some(Box::new(move |request: ImportRequest| {
@@ -439,11 +456,20 @@ fn services(inbox: Inbox, ctx: egui::Context) -> Services {
                 ctx.request_repaint();
             });
         })),
-        write: Some(Box::new(|name: &str, bytes: &[u8]| download(name, bytes))),
-        download: Some(Box::new(|name: &str, bytes: &[u8]| download(name, bytes))),
+        write: Some(save_or_download(host.clone(), false)),
+        download: Some(save_or_download(host.clone(), false)),
+        download_as: host.map(|host| save_or_download(Some(host), true)),
         inbox: Some(inbox),
         ..Default::default()
     }
+}
+
+/// A file the app hands the user: to the host page when hosted, else a browser download.
+fn save_or_download(host: Option<crate::host::Bridge>, save_as: bool) -> Box<dyn FnMut(&str, &[u8]) -> Result<(), String>> {
+    Box::new(move |name: &str, bytes: &[u8]| match &host {
+        Some(host) => host.save(name, bytes, save_as),
+        None => download(name, bytes),
+    })
 }
 
 /// Trigger a browser download of `bytes` named after the last component of `path`.

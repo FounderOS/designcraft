@@ -8,7 +8,7 @@
 //! - no TCP control channel (browsers can't listen on sockets);
 //! - File → Open / Place use the browser file picker; bytes arrive asynchronously through
 //!   `Services::inbox` (`.designcraft` → `file.openBytes`, images → `file.place`);
-//! - Save and Export trigger a browser download;
+//! - Save and Export trigger a browser download, or go to the page hosting the app (`host`);
 //! - dropped files are read asynchronously by `web::WebShell` and delivered through the inbox.
 //!
 //! URL query flags: `?webgl` forces the WebGL2 backend instead of WebGPU; `?sample` opens the
@@ -21,6 +21,9 @@ mod browser_policy;
 
 #[cfg(target_arch = "wasm32")]
 mod web;
+
+#[cfg(target_arch = "wasm32")]
+mod host;
 
 #[cfg(any(target_arch = "wasm32", test))]
 mod graphics;

@@ -66,6 +66,10 @@ pub struct Services {
     /// instead of writing to a path, and a file saved under a name goes to the downloads with no
     /// save dialog.
     pub download: Option<DownloadFn>,
+    /// Save As… where Save is a download: hands the document over as a new file, so a page
+    /// hosting the app stores it under a new name instead of over the file it opened. `None`:
+    /// Save As downloads as Save does.
+    pub download_as: Option<DownloadFn>,
     /// Files delivered asynchronously, drained every frame with their captured request context.
     pub inbox: Option<Inbox>,
     /// The system clipboard's text, for Paste chosen from a menu (egui only delivers it with the
