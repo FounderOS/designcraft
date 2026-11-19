@@ -1,10 +1,12 @@
 //! The browser shell: web `Services`, drag-and-drop, and the eframe web runner.
 
 use super::browser_policy::{has_query_flag, mime_for};
+use crate::autosave::Autosave;
 use crate::graphics::{GraphicsState, RecoveryDocument, recovery_documents};
 use designcraft_engine::Session;
 use designcraft_ui_egui::{DesignApp, ImportRequest, ImportedFile, Inbox, Services};
 use wasm_bindgen::JsCast as _;
+use web_time::Instant;
 
 const DOC_EXTS: &[&str] = &["designcraft", "idml", "indd", "indt"];
 const IMAGE_EXTS: &[&str] = &[
@@ -82,7 +84,8 @@ pub fn start() {
                     if has_query_flag(&query(), "sample") {
                         let _ = app.run("file.newSample", serde_json::json!({}));
                     }
-                    Ok(Box::new(WebShell { app, inbox, read_errors: Default::default(), graphics: creator_graphics, host: creator_host }))
+                    let autosave = creator_host.as_ref().map(|_| Autosave::new(Instant::now()));
+                    Ok(Box::new(WebShell { app, inbox, read_errors: Default::default(), graphics: creator_graphics, host: creator_host, autosave }))
                 }),
             )
             .await;
@@ -361,6 +364,31 @@ struct WebShell {
     read_errors: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     graphics: GraphicsState,
     host: Option<crate::host::Bridge>,
+    /// Saves to the host once the document rests (`crate::autosave`); only in host mode.
+    autosave: Option<Autosave>,
+}
+
+impl WebShell {
+    /// Host mode: Save (to the host, as Ctrl+S does) once the document in front has had unsaved
+    /// changes and no work for [`crate::autosave::IDLE`].
+    fn autosave(&mut self, ctx: &egui::Context) {
+        let Some(autosave) = &mut self.autosave else { return };
+        if self.graphics.has_failed() {
+            return;
+        }
+        let now = Instant::now();
+        let front = self.app.session.active();
+        let dirty = front.is_some_and(designcraft_engine::DocState::is_dirty);
+        let busy = crate::autosave::user_busy(ctx) || front.is_some_and(|d| d.interaction.is_some());
+        if autosave.step(front.map(|d| (d.uid, d.revision)), dirty, busy, false, now)
+            && let Err(e) = self.app.run("app.save", serde_json::json!({}))
+        {
+            log::warn!("autosave: {e}");
+        }
+        if let Some(wait) = autosave.wake_in(now) {
+            ctx.request_repaint_after(wait);
+        }
+    }
 }
 
 impl eframe::App for WebShell {
@@ -371,6 +399,7 @@ impl eframe::App for WebShell {
             self.app.status(error);
         }
         let _ = graphics.run_if_healthy(|| self.app.logic(ctx));
+        self.autosave(ctx);
         if let Some(host) = &self.host {
             host.dirty(self.app.session.documents().iter().any(|d| d.is_dirty()));
         }
@@ -418,6 +447,9 @@ impl eframe::App for WebShell {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let _ = self.graphics.run_if_healthy(|| self.app.ui(ui));
+        // Again after the UI: an edit made in it starts its idle time now, not at the next pass,
+        // which an idle page may never run.
+        self.autosave(ui.ctx());
     }
 
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {

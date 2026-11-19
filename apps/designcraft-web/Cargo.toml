@@ -21,6 +21,8 @@ form_urlencoded = "1.2"
 designcraft-ui-egui = { workspace = true }
 egui = { workspace = true }
 log = { workspace = true }
+# The autosave clock (`autosave`): `std::time::Instant` panics in the browser.
+web-time = { workspace = true }
 serde_json = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
