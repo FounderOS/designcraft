@@ -380,7 +380,8 @@ impl WebShell {
         let front = self.app.session.active();
         let dirty = front.is_some_and(designcraft_engine::DocState::is_dirty);
         let busy = crate::autosave::user_busy(ctx) || front.is_some_and(|d| d.interaction.is_some());
-        if autosave.step(front.map(|d| (d.uid, d.revision)), dirty, busy, false, now)
+        let saving = self.host.as_ref().is_some_and(crate::host::Bridge::saving);
+        if autosave.step(front.map(|d| (d.uid, d.revision)), dirty, busy, saving, now)
             && let Err(e) = self.app.run("app.save", serde_json::json!({}))
         {
             log::warn!("autosave: {e}");

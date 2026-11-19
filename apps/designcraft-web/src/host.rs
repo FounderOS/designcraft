@@ -7,14 +7,17 @@
 //!   it says `file: false` and a host sends `bytes`.
 //! - `designcraft:open` `{ name, bytes }` goes into the shell's [`Inbox`] as a dropped file does,
 //!   and opens as File › Open would.
-//! - `designcraft:save` `{ name, bytes, saveAs }` for every file the app would download: Save and
-//!   exports with `saveAs: false` (an export under its own extension), Save As… with `true`.
+//! - `designcraft:save` `{ name, bytes, saveAs, id }` for every file the app would download: Save and
+//!   exports with `saveAs: false` (an export under its own extension), Save As… with `true`. The
+//!   host answers `designcraft:saved` `{ id }` once it is stored; autosave waits for that
+//!   ([`crate::in_flight`]).
 //! - `designcraft:dirty` whenever unsaved changes appear or go away, and `designcraft:failed` when
 //!   the app couldn't start.
 
 use std::rc::Rc;
 
 use craft_web_host::web::{FileData, Host, Message};
+use web_time::Instant;
 use designcraft_ui_egui::{ImportRequest, ImportedFile, Inbox};
 
 /// The app id in the host messages (`designcraft:ready`).
@@ -28,24 +31,29 @@ const OPEN_PURPOSE: &str = "host";
 pub struct Bridge {
     host: Rc<Host>,
     inbox: Inbox,
+    /// Saves posted and not yet answered with `saved`.
+    in_flight: crate::in_flight::Shared,
 }
 
 /// The bridge for this page, or `None` when DesignCraft isn't hosted (no `?host=parent` or
 /// `data-host="page"`, no framing parent, or a parent the page doesn't allow): then saves stay
 /// browser downloads. Files the host sends go to `inbox` once [`Bridge::listen`] runs.
 pub fn connect(canvas: &web_sys::Element, inbox: &Inbox) -> Option<Bridge> {
-    Some(Bridge { host: Rc::new(Host::connect(APP, canvas)?), inbox: inbox.clone() })
+    Some(Bridge { host: Rc::new(Host::connect(APP, canvas)?), inbox: inbox.clone(), in_flight: Rc::default() })
 }
 
 impl Bridge {
     /// Hear the host's files. `ctx` wakes the app: a message is no input event, so egui would not
     /// paint (and drain the inbox) before the next one.
     pub fn listen(&self, ctx: egui::Context) {
-        let inbox = self.inbox.clone();
-        self.host.listen(move |message| {
-            if let Message::Open { name, data } = message {
-                deliver_open(&inbox, &ctx, name, &data);
+        let (inbox, in_flight) = (self.inbox.clone(), self.in_flight.clone());
+        self.host.listen(move |message| match message {
+            Message::Open { name, data } => deliver_open(&inbox, &ctx, name, &data),
+            Message::Saved { id } => {
+                in_flight.borrow_mut().done(&id);
+                ctx.request_repaint();
             }
+            _ => {}
         });
     }
 
@@ -61,7 +69,18 @@ impl Bridge {
     /// Hand the host a file the app would otherwise download. The host names it by the last
     /// component of `name`, so an export keeps its own extension.
     pub fn save(&self, name: &str, bytes: &[u8], save_as: bool) -> Result<(), String> {
-        self.host.post_save(name, bytes, None, save_as)
+        // The borrow ends before the post: a page host may answer `saved` while it runs.
+        let id = self.in_flight.borrow_mut().begin(Instant::now());
+        let posted = self.host.post_save(name, bytes, Some(&id), save_as);
+        if posted.is_err() {
+            self.in_flight.borrow_mut().done(&id);
+        }
+        posted
+    }
+
+    /// A save is out and the host has not answered it yet (for at most [`crate::in_flight::TIMEOUT`]).
+    pub fn saving(&self) -> bool {
+        self.in_flight.borrow_mut().running(Instant::now())
     }
 
     /// Report unsaved changes; the crate sends only changes of state, so this can run every frame.

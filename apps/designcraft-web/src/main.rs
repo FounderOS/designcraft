@@ -31,6 +31,9 @@ mod graphics;
 #[cfg(any(target_arch = "wasm32", test))]
 mod autosave;
 
+#[cfg(any(target_arch = "wasm32", test))]
+mod in_flight;
+
 #[cfg(target_arch = "wasm32")]
 fn main() {
     web::start();
